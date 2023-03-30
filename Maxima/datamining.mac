@@ -1,0 +1,1255 @@
+/*  Author Chung Chan
+    Copyright (C) 2021 Chung Chan */
+
+load(descriptive)$
+load(draw)$
+
+
+/****************
+ helper functions 
+ ****************/
+
+/*
+Simplify an expression.
+*/
+simplify(ex) := ev(fullratsimp(ex), simp)$
+
+/*
+Log base 2.
+*/
+log2(x):=log(x)/log(2)$
+
+/*
+Characteristic function.
+*/
+chi(p):=(if p then 1 else 0)$
+
+/********************************
+ Data construction/transformation
+ ********************************/
+
+/* Create data with feature names fns and a list lst of instances (list of 
+   feature values). */
+build_data_from_list(fns, lst):=apply('matrix, cons(fns,lst))$
+
+/* Create data with feature names fns and a matrix M with rows as the 
+   instances. */
+build_data_from_matrix(fns, M):=build_data_from_list(fns, args(M))$
+
+/* 
+Generate data with feature names fns by generating the instances one-by-one by 
+calling the function gen n times, each with an unique index as its argument 
+from 1 to n. 
+*/
+build_data(fns, gen, n):=block(
+    [lst:[]],
+    for i:1 thru n do
+    lst:endcons(
+        block(
+            [v:gen(i)],
+            for j:1 thru length(fns) do
+            v:subst(fns[j]=v[j], v),
+            map(simplify, v)
+        ),
+        lst
+    ),
+    build_data_from_list(fns, lst)
+)$
+
+/*
+Return the column index of the feature fn in the list fns of feature names.
+The returned value is false if fn is not in fns.
+*/
+feature_index(fns, fn):=block(
+    [i:1],
+    for x in fns unless x=fn do i:i+1,
+    if i<=length(fns) then i
+)$
+
+/*
+Return the size (number of instances) of the data.
+*/
+size(data):=length(data)-1$
+
+/*
+Return the i-th instance of data as a list of feature values.
+*/
+get_data(data, i):=args(data)[i+1]$
+
+/*
+Return the feature names of the data.
+*/
+feature_names(data):=args(data)[1]$
+
+/*
+Return the matrix of all feature values.
+*/
+all_feature_values(data):=submatrix(1,data)$
+
+/*
+Return a list of feature values in data for the feature fn.
+*/
+feature_values(data, fn):=block(
+    [i:feature_index(feature_names(data), fn)],
+    rest(args(transpose(col(data,i)))[1],1)
+)$
+
+/*
+Subsample data satisfying the condition cond, which is a boolean function that 
+takes a unique index (1, 2, ...) as the argument.
+*/
+subsample_data(data, cond):=block(
+    [
+        fns:feature_names(data),
+        fvs: args(all_feature_values(data)),
+        lst:[]
+    ],
+    for i:1 thru size(data) do
+    block(
+        [
+            r: fvs[i],
+            c:cond(i)
+        ],
+        if simplify(psubst(map("=",fns,r),c)) then
+        lst:endcons(r,lst)
+    ),
+    build_data_from_list(fns,lst)
+)$
+
+/*
+Transform the features of data to nfns using the generator ngen.
+*/
+transform_features(data, nfns, ngen):=block(
+    [
+        lst:[], 
+        fns:feature_names(data),
+        fvs:args(all_feature_values(data))
+    ],
+    for i:1 thru size(data) do
+    lst:endcons
+    (
+        block(
+            [
+                v:ngen(i),
+                r:fvs[i]
+            ],
+            v:psubst(map("=", fns, r), v),
+            for j:1 thru length(nfns) do
+            v:subst(nfns[j]=v[j], v),
+            map(simplify,v)
+        ),
+        lst
+    ),
+    build_data_from_list(nfns,lst)
+)$
+
+/*
+Stack the list lst of data (vertically).
+*/
+stack_data([lst]):=build_data_from_list(
+    feature_names(lst[1]),
+    apply('append,map(lambda([D], args(all_feature_values(D))), lst))
+)$
+
+/*
+Plot labeled data with x-axis xy[1] and y-axis xy[2]. 
+*/
+plot_labeled_data(data,xy,target):=
+block(
+    [
+        Ds:split_data(data, target),
+        D, lst:[]
+    ],
+    for i:1 thru length(Ds[2]) do
+    (
+        D:transform_features(Ds[2][i], xy, subst('xy=xy, lambda([i], xy))),
+        lst:append(lst,[color=i, points(args(all_feature_values(D)))])
+    ),
+    draw2d(lst,xlabel=xy[1],ylabel=xy[2])
+)$
+
+/* Split data according to a splitting criterion X */
+split_data(data, X):=block(
+    [D, Djs:[]],
+    D:transform_features(data, ['C], subst('X=X,lambda([i], [X]))),
+    t:empirical(feature_values(D, 'C)),
+    for j:1 thru length(t[1]) do
+        block([Dj],
+            Dj:subsample_data(
+                data,
+                subst(
+                    ['c=X, 'v=t[1]],
+                    lambda([i], equal(c,v[j]))
+                ) 
+            ),
+            Djs:endcons(Dj, Djs)
+        ),
+    [t,Djs]
+)$
+
+/* 
+Compute the empirical distribution of the list lst. 
+A pair is returned, where 
+- the first element is the list of unique values sorted in ascending order, and 
+- the second element is their fractional number of occurences. 
+*/
+empirical(lst):=block(
+    [
+        s:sort(lst),
+        n:length(lst), 
+        c:1, us:[], fs:[]
+    ],
+    for i:1 thru n do
+    (
+        if i<n and equal(s[i+1],s[i]) then
+        c:c+1
+        else
+        (
+            us:endcons(s[i], us),
+            fs:endcons(c/n, fs),
+            c:1
+        )
+    ),
+    [us,fs]
+)$
+
+
+maxima([lst]):=
+if length(lst)>1 
+/* recur on tail maxima (tm) */
+then block(
+    [tm :apply('maxima,rest(lst))],
+    if lst[1]>=tm[2] 
+    then maxima(lst[1]) 
+    else [tm[1]+1,tm[2]]
+)
+/* base cases */
+else if length(lst)>0 
+then [1, lst[1]]
+else [0, -inf]$  /* trailing $ gives no output. */
+
+/*
+Return the list of majority values.
+*/
+majorities(data, fn):=block(
+    [
+        t: empirical(feature_values(data, fn)),
+        mf,lst:[]
+    ],
+    mf: lmax(t[2]),
+    for i:1 thru length(t[1]) do
+    if equal(t[2][i], mf) then
+    lst: endcons(t[1][i], lst),
+    lst
+)$
+
+/*
+Given the lists of class values and predictions for different instances, 
+return the list of evaluation metrics:
+[TP, FN, FP, TN, accuracy, precision, recall, specificity]
+*/
+clf_performance_metrics(class,pred):=
+block(
+    [
+        TP:0,
+        FN:0,
+        FP:0,
+        TN:0,
+        n: length(class)
+    ],
+    for i:1 thru n do
+    if class[i]>0 then
+    if pred[i]>0 then
+    TP:TP+1
+    else
+    FN:FN+1
+    else
+    if pred[i]>0 then
+    FP:FP+1
+    else
+    TN:TN+1,
+    accuracy:(TP+TN)/(TP+TN+FP+FN),
+    precision:TP/(TP+FP),
+    recall: TP/(TP+FN),
+    specificity: TN/(TN+FP),
+    [TP, FN, FP, TN, accuracy, precision, recall, specificity]
+)$
+
+/*****************
+ Impurity measures
+ *****************/
+
+
+/* Entropy */
+entropy(ps):=lsum(if equal(p,0) then 0 else -p*log2(p), p, ps)$
+h([ps]):=entropy(ps)$
+
+/* Information content of target */
+Info(data, target):=block(
+    [ps:empirical(feature_values(data, target))[2]],
+    entropy(ps)
+)$
+
+/* Conditional information content of target given a splitting criterion X */
+InfoX(data, target, X):=block(
+    [info:0, t, ps, Ds],
+    t:split_data(data, X),
+    ps:t[1][2],
+    Ds:t[2],
+    for j:1 thru length(Ds) do
+    if size(Ds[j])>0 then (
+        info:info+ps[j]*entropy(
+            empirical(feature_values(Ds[j],target))[2]
+        )
+    ),
+    info
+)$
+
+/* Information gain of target with respect to a splitting criterion X. */
+Gain(data, target, X):=Info(data, target) - InfoX(data, target, X)$
+
+/* Split information of a splitting criterion */
+SplitInfo(data, X):=block(
+    [D:transform_features(data, ['C], subst('X=X, lambda([i], [X])))],
+    t:empirical(feature_values(D, 'C)),
+    entropy(t[2])
+)$
+
+/* Information gain ratio of target with respect to a splitting criterion X. */
+GainRatio(data, target, X):=Gain(data, target, X)/SplitInfo(data, X)$
+
+/* Gini impurity index */
+gini(ps):=lsum(p*(1-p), p, ps)$
+g([ps]):=gini(ps)$
+
+/* Gini impurity of target */
+Gini(data, target):=block(
+    [t:empirical(feature_values(data, target))],
+    gini(t[2])
+)$
+
+/* Conditional Gini impurity of target given a splitting criterion X. */
+GiniX(data, target, X):=block(
+    [_gini:0, t, ps, Ds],
+    t:split_data(data, X),
+    ps:t[1][2],
+    Ds:t[2],
+    for j:1 thru length(Ds) do
+    if size(Ds[j])>0 then
+    _gini:_gini+ps[j]*gini(
+        empirical(feature_values(Ds[j], target))[2]
+    ),
+    _gini
+)$
+
+/* Drop in Gini impurity of target with respect to a splitting criterion X. */
+GiniDrop(data, target, X):=Gini(data, target) - GiniX(data, target, X)$
+
+
+/*************************
+ Rule-based classification
+ *************************/
+
+/* Helper functions for calculating FOIL gain and prune. */
+
+foilgain(p_0,n_0,p_1,n_1):=if equal(p_1, 0) then 0 else 
+p_1*(log2(p_1/(p_1+n_1))-log2(p_0/(p_0+n_0)))$
+
+foilprune(p,n):=if equal(p+n,0) then minf else 
+(p-n)/(p+n)$
+
+conjoin(conjts):=apply(
+    "and",
+    map(lambda([v], if op(v)="=" then apply(equal,args(v)) else v),conjts)
+)$
+
+/*
+For the rules
+R_0: rest(cjts,-1) => Y=1
+R_1: cjts => Y=1
+where rest(cjts,-1) is the list of conjuncts in cjts except the last one,
+compute [p_0, n_0, p_1, n_1] where
+- p_i is the number of positive examples (with Y>0 in data) covered by R_i, and
+- n_i is the number of negative examples (with Y<0 in data) covered by R_i. 
+*/
+pn_counts(data, Y, cjts):=
+    block([data_0, cond_0, p_0, n_0, data_1, cond_1, p_1, n_1],
+        cond_0: conjoin(rest(cjts, -1)),
+        data_0: subsample_data(data, subst('cond_0=cond_0,lambda([i],cond_0))),
+        p_0: size(subsample_data(data_0, subst('Y=Y,lambda([i],Y>0)))),
+        n_0: size(data_0) - p_0,
+        cond_1: conjoin(cjts),
+        data_1: subsample_data(data, subst('cond_1=cond_1,lambda([i],cond_1))),
+        p_1: size(subsample_data(data_1, subst('Y=Y,lambda([i],Y>0)))),
+        n_1: size(data_1) - p_1,
+        [p_0,n_0,p_1,n_1]
+    )$
+
+/*
+FOIL gain from rule R_0 to rule R_1 where
+R_0: rest(cjts,-1) => Y=1
+R_1: cjts => Y=1
+and rest(cjts,-1) is the list of conjuncts in cjts except the last one.
+*/
+FOILGain(data, Y, cjts):=apply('foilgain, pn_counts(data, Y, cjts))$
+
+/*
+FOIL prune from rule R_1 to R_0 where
+R_0: rest(cjts,-1) => Y=1$
+R_1: cjts => Y=1$
+and rest(cjts,-1) is the list of conjuncts in cjts except the last one.
+*/
+FOILPrune(data, Y, cjts):=apply(
+    lambda([p_0,n_0,p_1,n_1], [foilprune(p_1,n_1), foilprune(p_0,n_0)]),
+    pn_counts(data, Y, cjts)
+)$
+
+    
+/**********
+ Clustering
+ **********/
+/*
+Compute the squared Euclidean distance of two vectors p and q.
+*/
+sq_dist(p,q):=block(
+    [
+        v
+    ],
+    if listp(p) then p:apply('matrix, [p]),
+    if listp(q) then q:apply('matrix, [q]),
+    v: p-q,
+    v . v
+)$
+
+/* Euclidean distance between two vectors/lists p and q. */
+dist(p,q):=sqrt(sq_dist(p,q))$
+
+/*
+Return a row index of the matrix C corresponding to the nearest neighbor of p. 
+*/
+nearest_neighbor(p, Q):=block(
+    [
+        i, cv,
+        mv:inf
+    ],
+    if listp(p) then p:apply('matrix,[p]),
+    if listp(Q) then Q:apply('matrix,Q),
+    for j:1 thru length(Q) do
+    (
+        cv:sq_dist(p,row(Q,j)),
+        if (cv < mv) then (
+            i:j,
+            mv:cv
+        )
+    ),
+    i
+)$
+
+/*
+Return a list of row indices of matrix Q corresponding to the nearest neighbors 
+of rows of matrix P.
+*/
+nearest_neighbors(P,Q):=block(
+    if listp(P) then P:apply('matrix, P),
+    if listp(Q) then Q:apply('matrix, Q),
+    makelist(nearest_neighbor(row(P,i),Q),i,length(P))
+)$
+
+/*
+Return the cluster assignment that minimizes the distance to of the data points 
+to the cluster centers in cs.
+*/
+clusters_for_centroids(data, cs):=block(
+    [
+        cfns: feature_names(cs),
+        P:all_feature_values(
+            transform_features(data, cfns, 
+                subst('cfns=cfns,lambda([i], cfns))
+            )
+        ),
+        Q:all_feature_values(cs)
+    ],
+    nearest_neighbors(P, Q)
+)$
+
+/*
+Compute the total squared distance of the data points to their cluster centers 
+cs according to the cluster assignment C.
+*/
+variation(data,C,cs):=block(
+    [
+        P: all_feature_values(data),
+        Q: all_feature_values(cs),
+        var:0
+    ],
+    for j:1 thru size(data) do
+    var:var+sq_dist(row(P,j), row(Q,C[j])),
+    var
+)$
+
+/*
+Compute the centroid (as a row vector) of the rows of a non-empty input matrix P.
+P may also be a list of list.
+*/
+centroid(P):=block(
+    [
+        n: length(P),
+        u
+    ],
+    if listp(P) then 
+    P: apply('matrix, P),
+    u: 1+zeromatrix(1, n),
+    (u . P)/n
+)$
+
+/*
+Compute the centroids of the list Cs of clusters using only features in cfns .
+The centroids are returned as data with features cfns.
+*/
+centroids(Cs, cfns):=block(
+    [
+        cs:[], c
+    ],
+    for data in Cs do
+    (
+        c:centroid(
+            all_feature_values(
+                transform_features(data, cfns, 
+                    subst('cfns=cfns,lambda([i], cfns))
+                )
+            )
+        ),
+        cs:endcons(args(c)[1],cs)
+    ),
+    build_data_from_list(cfns,cs)
+)$
+
+/*
+Split data by the cluster assignment C, which is a list of cluster indices, 
+one for each data point.
+*/
+split_data_by_clusters(data, C):=block(
+    [Ds:[], t, Dj],
+    t:empirical(C),
+    for j:1 thru length(t[1]) do
+        (
+            Dj:subsample_data(
+                data,
+                subst(
+                    ['C=C, 'v=t[1]],
+                    lambda([i], equal(C[i],v[j]))
+                ) 
+            ),
+            Ds:endcons(Dj, Ds)
+        ),
+    [t,Ds]
+)$
+
+/*
+Compute the centroids computed on the features in cfns according to the cluster 
+assignment C. The centroids are returned as data with features cfns, in the 
+ascending order of the cluster indices.
+*/
+centroids_for_clusters(data, cfns, C):=block(
+    [
+        t: split_data_by_clusters(data, C),
+        nfns: endcons(C, cfns)
+    ],
+    centroids(t[2], cfns)
+)$
+
+/* Cluster distances */
+min_dist(P, Q):=block(
+    [
+        md2:inf
+    ],
+    for i:1 thru length(P) do
+    for j:1 thru length(Q) do
+    md2: min(md2, sq_dist(row(P, i), row(Q, j))),
+    sqrt(md2)
+)$
+
+max_dist(P, Q):=block(
+    [
+        md2:-inf
+    ],
+    for i:1 thru length(P) do
+    for j:1 thru length(Q) do
+    md2: max(md2, sq_dist(row(P, i), row(Q, j))),
+    sqrt(md2)
+)$
+
+centroid_dist(P, Q):=block(
+    [
+        p: centroid(P),
+        q: centroid(Q)
+    ],
+    sqrt(sq_dist(p, q))
+)$
+
+ward_dist(P, Q):=block(
+    [
+        M: apply('matrix,append(args(P), args(Q))),
+        c, d:0
+    ],
+    c: centroid(M),
+    for i:1 thru length(M) do
+    d:d+sq_dist(row(M, i), c),
+    d
+)$
+
+/*
+Compute the sorted list of pairwise cluster distances for data with clustering 
+assignment C and the distance measure dist. 
+The returned list consists of elements [i,j,d] where d is the distance of
+Cluster i and Cluster j.
+*/
+pairwise_cluster_dists(data, C, dist):=block(
+    [
+        t: split_data_by_clusters(data, C),
+        ids, Cs, k, lst:[]
+    ],
+    ids: t[1][1],
+    Cs: t[2],
+    k: length(Cs),
+    for i:1 thru k do
+    for j:i+1 thru k do
+    lst:endcons(
+        [
+            [ids[i],ids[j]],
+            apply(dist,[all_feature_values(Cs[i]),all_feature_values(Cs[j])])
+        ],
+        lst
+    ),
+    sort(lst,lambda([a,b],a[2]<b[2]))
+)$
+
+/*
+Return the cluster assignment C after agglomerating the clusters with indices 
+in ids. 
+*/
+agglomerate(data, C, ids):=subst(
+    map("=",ids, makelist(lmax(C)+1,length(ids))),
+    C
+)$
+
+
+/*
+Perform the agglomerative nesting algorithm to cluster data with cluster 
+distance dist until there are k clusters.
+A pair is returned:
+- The first element is the desired cluster assignment for k clusters.
+- The second element is a list of l-th element is [C, [i,j], d] where 
+  - C is the cluster assignment right before the l-th agglomeration,
+  - i and j are the cluster indices to be merged to lmax(C)+1, and
+  - d is the distance of Cluster i and j with respect to dist.
+*/
+agnes(data, dist, k):=block(
+    [
+        n: size(data),
+        C, pcds, ids, lst:[]
+    ],
+    C: makelist(i,i,n),
+    for j:1 thru n-k do
+    (
+        pcds: pairwise_cluster_dists(data, C, dist),
+        ids: pcds[1][1],
+        lst:endcons(cons(C,pcds[1]),lst),
+        C: agglomerate(data, C, ids)
+    ),
+    [C,lst]
+)$
+
+/*
+Return a pair consisting of the pairwise correctness matrix and the accuracy of 
+a cluster assignment C compared to the ground truth categorization L.
+*/
+pairwise_correctness(C, L):=
+block(
+    [
+        n: length(L),
+        lst1: [],
+        L_eq, C_eq, pcm, u
+    ], 
+    for i:1 thru n do
+    block(
+        [lst2: []],
+        for j:1 thru i-1 do
+        lst2: endcons(lst1[j][i],lst2),
+        lst2: endcons(1, lst2), 
+        for j:i+1 thru n do
+        (
+            L_eq:equal(L[i],L[j]),
+            C_eq:equal(C[i],C[j]),
+            if ((L_eq and C_eq) or not (L_eq or C_eq)) then
+            lst2: endcons(1, lst2) else
+            lst2: endcons(0, lst2)
+        ),
+        lst1: endcons(lst2, lst1)
+    ),
+    pcm: apply('matrix, lst1),
+    u: 1+zeromatrix(1,n),
+    acc: u.pcm.transpose(u)/n^2,
+    [pcm, acc]
+)$
+
+/* 
+Returns [[BCubed_precision, BCubed_recall], stats] where stats contains the 
+detailed statistics per node.
+*/
+BCubed(C, L):=block(
+    [
+        n: length(L),
+        L_eq, C_eq, lst:[],
+        TP, FN, FP, TN
+    ],
+    for i:1 thru n do
+    block(
+        [
+            TPj:[], FNj:[], FPj:[], TNj:[]
+        ],
+        for j:1 thru n do (
+            L_eq: equal(L[i],L[j]),
+            C_eq: equal(C[i],C[j]),
+            if L_eq then
+            if C_eq then
+            TPj: endcons(j, TPj) else
+            FNj: endcons(j, FNj) else
+            if C_eq then
+            FPj: endcons(j, FPj) else
+            TNj: endcons(j, TNj)
+        ),
+        TP: length(TPj),
+        FN: length(FNj),
+        FP: length(FPj),
+        TN: length(TNj),
+        lst: endcons(
+            [TPj, FNj, FPj, TNj, TP, FN, FP, TN, TP/(TP+FP), TP/(TP+FN)],
+            lst
+        )
+    ),
+    stats: build_data_from_list(
+        ["TPj", "FNj", "FPj", "TNj", "TP", "FN", "FP", "TN", "precision", "recall"],
+        lst
+    ),
+    [
+        [
+            apply("+", feature_values(stats, "precision"))/n, 
+            apply("+", feature_values(stats, "recall"))/n
+        ],
+        stats
+    ]
+)$
+
+/* 
+Compute the core distances of each point in a data set with respect to the 
+parameters eps and MinPts for OPTICS/DBSCAN. 
+Core distance is inf if there are less than MinPts data points within the eps 
+neighborhood.
+*/
+core_dists(data, MinPts, eps):=block(
+    [
+        P: all_feature_values(data),
+        n: size(data),
+        ids,
+        pd: [],
+        cd: [],
+        nbs: [],
+        lst: []
+    ],
+    ids: makelist(i,i,n),
+    for i:1 thru n do
+    block(
+        [di: []],
+        for j:1 thru i-1 do
+        di: endcons(pd[j][i], di),
+        di: endcons(0, di),
+        for j:i+1 thru n do
+        di: endcons(dist(row(P,i), row(P,j)), di),
+        pd: endcons(di, pd),
+        nbs: endcons(
+            sort(
+                sublist(ids, lambda([i], di[i]<=eps)), 
+                lambda([i,j],di[i]<di[j])
+            ),
+            nbs
+        ),
+        cd: endcons(
+            if MinPts<=length(nbs[i]) 
+            then pd[i][nbs[i][MinPts]]
+            else inf,
+            cd
+        ),
+        lst: endcons(append([cd[i], nbs[i]], pd[i]), lst)
+    ),
+    build_data_from_list(
+        append(
+            ["core_dist", "neighbors"], 
+            map(lambda([i], 'd[i]), ids)), 
+            lst
+        )
+)$
+
+/*
+Apply DBSCAN to cluster points in data. The returned list consists of
+- the set of clusters (sets of indices), 
+- the set of noise points,
+- the set of core points, and
+- the set of border points.
+*/
+dbscan(data, MinPts, eps):=block(
+    [
+        n: size(data),
+        cdm: core_dists(data, MinPts, eps),
+        cd, nbs,
+        ids, cp, bp:{}, ucp, tv, np, cur, Cs: [], C
+    ],
+    cd: feature_values(cdm, "core_dist"),
+    nbs: feature_values(cdm, "neighbors"),
+    ids: makelist(i,i,n),
+    np:setify(ids),
+    cp: sublist(ids, lambda([i], cd[i]<inf)),
+    ucp: setify(cp), /* unvisited core points */
+    while not emptyp(ucp) do
+    (
+        ucp: listify(ucp),
+        C: [ucp[1]],              /* current cluster */
+        tv: [ucp[1]],             /* nodes to visit */
+        np: disjoin(ucp[1], np),  /* nodes not assigned a cluster 
+                                  (eventually noise points) */
+        ucp: setify(rest(ucp)),
+        while not emptyp(tv) do
+        (
+            cur: tv[1],          /* current node */
+            tv: rest(tv),
+            r: intersection(setify(nbs[cur]), np),  /* reachable nodes */
+            /* print(np, cur, r, C, Cs, tv, ucp), */
+            C: append(C,listify(r)),
+            np: setdifference(np, r),
+            bp: union(bp, setdifference(r, ucp)),   /* border points */
+            r: intersection(r, ucp),                /* reachable core points */
+            tv: listify(union(setify(tv), r)),
+            ucp: setdifference(ucp, r)
+        ),
+        Cs: endcons(C, Cs)
+    ),
+    [fullsetify(Cs), np, setify(cp), bp]
+)$
+
+
+/*
+Apply OPTICS to cluster points in data. It returns a pair consisting of
+- the data containing
+  - a column of reachability distances, and
+  - a column containing the corresponding list of nodes reached, and
+- the set of noise points.
+*/
+optics(data, MinPts, eps):=block(
+    [
+        n: size(data),
+        cdm: core_dists(data, MinPts, eps),
+        cd, nbs,
+        ids, cp, ucp, tv, np, cur, rd:[], nrp, nr
+    ],
+    cd: feature_values(cdm, "core_dist"),
+    nbs: feature_values(cdm, "neighbors"),
+    ds,
+    ids: makelist(i,i,n),
+    np:setify(ids),
+    cp: sublist(ids, lambda([i], cd[i]<inf)),
+    ucp: setify(cp), /* unvisited core points */
+    for i1:1 thru 3 while not emptyp(ucp) do
+    (
+        ucp: listify(ucp),
+        tv: [[inf,ucp[1]]],  /* nodes to visit sorted by reachability distances */
+        ucp: setify(rest(ucp)),
+        for i2:1 thru 3 while not emptyp(tv) do
+        (
+            cur: tv[1],             /* current node */
+            tv: rest(tv),
+            rd: endcons(cur,rd),    /* current list of reachability distances */
+            np: disjoin(cur[2], np), /* nodes not reached */
+            ucp: disjoin(cur[2], ucp),
+            /* distances to other nodes */
+            ds: feature_values(cdm, 'd[cur[2]]),
+            /* new reachable nodes */             
+            nrp: listify(intersection(np, setify(nbs[cur[2]]))),
+            /* new reachable nodes with their reachability distances */ 
+            nr: map(lambda([j], [max(cd[cur[2]], ds[j]), j]), nrp),
+            /* print(np, cur, nr, tv, ucp, np, rd), */
+            tv: sort(append(tv, nr), lambda([a,b],a[1]<b[1])),
+            while not (emptyp(tv) or elementp(tv[1][2], np)) do tv: rest(tv)
+        )
+    ),
+    [build_data_from_list(["reach_dist", 'i],rd), np]
+)$
+
+
+/*
+Convert a cluster assignment C (list of cluster indices) to the list of clusters. 
+What is returned is a pair where
+- the first element is the list of unique cluster indices in ascending order, and
+- the second element is the corresponding list of clusters, each of which is a 
+  list of row indices of C in ascending order associated with the cluster index. 
+*/
+to_clusters(C):=
+block(
+    [
+        t: discrete_freq(C),
+        n: length(C),
+        ids: makelist(i,i,length(C)),
+        Cs: []
+    ],
+    for j:1 thru length(t[1]) do
+    Cs: endcons(
+            sublist(ids, lambda([i], equal(C[i],t[1][j]))),
+            Cs
+        ), 
+    [t[1],Cs]
+)$
+
+/*
+Compute the silhouette coefficients of each point in data. It returns a data 
+with columns:
+- 'a: mean intra-cluster distance. 
+- 'b: mean nearest-cluster distance.
+- "nearest": index of the nearest cluster. 
+- 's: silhouette coefficient.
+*/
+silhouette(data, C):=block(
+    [
+        P: all_feature_values(data),
+        t: to_clusters(C),
+        lst:[],
+        ds,d,nCi,nCj,nC,a,b,s,Cs,minj
+    ],
+    Cs:t[2],
+    nC:length(Cs),
+    if nC>1 then (
+        for ki:1 thru nC do
+        (
+            nCi:length(Cs[ki]),
+            for i:1 thru nCi do
+            (
+                ds:[Cs[ki][i]],
+                if nCi>1 then
+                (
+                    /* mean intra-cluster distance */
+                    a:0,
+                    for j:1 thru nCi do
+                    if not equal(i,j) then
+                    (
+                        /* print(Cs[ki][i],Cs[ki][j]), */
+                        a:a+dist(row(P,Cs[ki][i]), row(P, Cs[ki][j]))
+                    ),
+                    a: a/(nCi-1),
+                    /* mean nearest-cluster distance */
+                    b:inf,
+                    for kj:1 thru nC do
+                    if not equal(ki,kj) then
+                    (
+                        /* mean distance to another cluster */
+                        d:0,
+                        nCj:length(Cs[kj]),
+                        for j:1 thru nCj do 
+                        (
+                            /* print(Cs[ki][i],Cs[kj][j]), */
+                            d:d+dist(row(P,Cs[ki][i]), row(P, Cs[kj][j]))
+                        ),
+                        d: d/nCj,
+                        if d < b then
+                        (
+                            minj: t[1][kj],
+                            b:d
+                        )
+                    ),
+                    /* silhouette coefficient */
+                    s: (b-a)/max(a,b),
+                    ds:append(ds,[a,b,minj,s])
+                ) else ds:append(ds,[false, false, false, 1]),
+                lst: endcons(ds, lst)
+            )
+        ),
+        build_data_from_list(
+            ['a, 'b, "nearest", 's], 
+            map(rest, sort(lst, lambda([a,b], a[1]<a[1])))
+        )
+    )
+)$
+
+/*
+Solve the linear sum assignment problem, i.e., find a matching from the row 
+indices rids to the column indices cds that maximizes the sum of the matched 
+entries in U.
+*/
+lsa(U,rids,cds):=block(
+    [
+        m:length(rids),
+        n:length(cds),t,best,c
+    ],
+    if min(m,n)<1 then
+    /* nothing to match */
+    [0,[]]
+    else (
+        if m<n then (
+            best:[-inf,false],
+            for j:1 thru n do 
+            (
+                t:lsa(U,rest(rids),delete(cds[j],cds)),
+                c:U[rids[1]][cds[j]] + t[1],
+                if c>best[1] then
+                best: [c,cons([rids[1],cds[j]],t[2])]
+            ),
+            best
+        ) else (
+            best:[-inf,false],
+            for i:1 thru m do
+            (
+                t:lsa(U,delete(rids[i],rids),rest(cds)),
+                c:U[rids[i]][cds[1]] + t[1],
+                if c>best[1] then
+                best: [c,cons([rids[i],cds[1]],t[2])]
+            ),
+            best
+        )
+    )
+)$
+
+
+/*
+Carry the classes-to-clusters evaluation on the categorization L and 
+cluster assignment C.
+The returned list consists of
+- the accuracy maximized over the classes-to-clusters assignment,
+- the assignment in the form of a list of [l,c] where l is a class index and 
+  c is a cluster index, and
+- the list consisting of
+  - the list class of unique class labels in ascending order, 
+  - the list cluster of unique cluster labels in ascending order, and
+  - the list lst of list of counts where lst[i][j] is the counts of instances 
+    associated with class index class[i] and cluster index cluster[j]. 
+*/
+classes_to_clusters_eval(L, C):=block(
+    [
+        tL:to_clusters(L), 
+        tC:to_clusters(C), 
+        Ls, Cs, lst:[], c,
+        nL, nC, t
+    ],
+    nL:length(tL[1]),
+    nC:length(tC[1]),
+    Ls: map(setify, tL[2]),
+    Cs: map(setify, tC[2]),
+    for i:1 thru nL do
+    (
+        c:[],
+        for j:1 thru nC do
+        c: endcons(length(intersection(Ls[i], Cs[j])), c),
+        lst: endcons(c, lst)
+    ),
+    t:lsa(lst, makelist(i,i,nL), makelist(i,i,nC)),
+    [
+        t[1]/length(C), 
+        map(lambda([ids],[tL[1][ids[1]],tC[1][ids[2]]]),t[2]), 
+        [tL,tC,lst]
+    ]
+)$
+
+/***********************
+ Association Rule Mining
+ ***********************/
+
+/*
+Return the support count of A in the transactional data.
+*/
+support_count(data, A):=lsum(chi(subsetp(A,T)),T,data)$
+
+/*
+Return all the items in the transactional data.
+*/
+all_items(data):=listify(apply('union, data))$
+
+/*
+Return a list of support counts corresponding to the list of itemsets in C.
+*/
+support_counts(data, C):=map(lambda([A],[A,support_count(data,A)]),C)$
+
+/*
+Return the sublist of [A,c] from C where the frequent itemset A has counts c at 
+least min_sup.
+*/
+frequent_itemsets(C, min_sup):=sublist(C,lambda([Ac], Ac[2]>=min_sup))$
+
+/*
+Return the list of [A,c] where A is a frequent 1-itemset from data with count c 
+at least min_sup. 
+*/
+apriori1(data, min_sup):=block(
+    [C:makelist({i},i,all_items(data))],
+    C:support_counts(data, C),
+    frequent_itemsets(C, min_sup)
+)$
+
+/*
+Join step for apriori algorithm. It returns a list of candidate obtained by 
+joining two frequent itemsets from L having all but the last items identical. 
+*/
+apriori_join(data, L):=block(
+    [C:[] ,m:length(L)],
+    for i:1 thru m do
+    for j:i+1 thru m do
+    if equal(rest(L[i][1],-1),rest(L[j][1],-1)) then
+    C: endcons(union(L[i][1],L[j][1]), C),
+    C
+)$
+
+/*
+Prune step for apriori algorithm. It prune the candidate list C of k-itemsets 
+if any of its (k-1)-subsets is not in the set L of (k-1)-frequent item sets. 
+*/
+apriori_prune(data, C, L):=sublist(C,
+    lambda([A],
+        block(
+            [not_prune:true, Al],
+            Al:listify(A),
+            for i:1 thru length(L[1]) while not_prune do
+            not_prune: elementp(disjoin(Al[i],A),L),
+            not_prune
+        )
+    )
+)$
+
+/*
+Generate the frequent k-itemsets given the frequent (k-1)-itemsets stored in L.
+*/
+apriorik(data, L, min_sup):=block(
+    [C:[] ,m:length(L)],
+    C: apriori_join(data, L),
+    C: apriori_prune(data, C, setify(map(first,L))),
+    C: support_counts(data, C),
+    frequent_itemsets(C, min_sup)
+)$
+
+/*
+Generate all frequent itemsets starting with k from 1 until there are no more 
+frequent k-itemsets.
+*/
+apriori(data, min_sup):=block(
+    [L: apriori1(data, min_sup), lst:[]],
+    while length(L)>1 do
+    (
+        lst: endcons(L, lst),
+        L: apriorik(data, L, min_sup)
+    ),
+    lst
+)$
+
+/* Creates an association rule A => B. */
+ar(A,B):=matrix([A,"⇒",B])$
+
+/* Returns the itemset associated with the antecedent of R. */
+ar_A(R):=R[1,1]$
+
+/* Returns the itemset associated with the consequence of R.*/
+ar_B(R):=R[1,3]$
+
+/* Computer various qualities of an association rule R from a transactional 
+data set data. */
+coverage(data, R):=support_count(data, ar_A(R))/length(data)$
+support(data, R):=support_count(data, union(ar_A(R),ar_B(R)))/length(data)$
+confidence(data, R):=support(data, R)/coverage(data, R)$
+prior(data, R):=support_count(data, ar_B(R))/length(data)$
+lift(data, R):=confidence(data, R)/prior(data, R)$
+
+/*
+Generate association rules R for a transactional data set data with support 
+at least s and confidence at least c.
+It returns a list of lists in the form:
+[
+    R, 
+    coverage(data, R), 
+    support(data, R), 
+    confidence(data, R), 
+    prior(data, R), 
+    lift(data, R)
+]
+*/
+support_confidence_framework(data, s, c):=
+block(
+    [
+        n: length(data),
+        L, C, A, B, C_count, A_count, B_count, lst:[]
+    ],
+    L: apply('append, apriori(data, n*s)),
+    for i:1 thru length(L) do (
+        C:L[i][1],
+        C_count: L[i][2],
+        for k:1 thru length(C)-1 do
+        for A in powerset(C, k) do (
+            A_count : assoc(A, L),
+            if A_count <= C_count/c then
+            (
+                B: setdifference(C,A),
+                B_count : assoc(B, L),
+                lst:endcons(
+                    [
+                        ar(A,B), 
+                        A_count/n,
+                        C_count/n, 
+                        C_count/A_count, 
+                        B_count/n, 
+                        C_count/A_count/B_count*n
+                    ],
+                    lst
+                )
+            )
+        )
+    ),
+    lst
+)$
+
+
+/*
+Bottom-up construction of iceberg cube where
+- data is the base cuboid with
+- dims is the dimensions names,
+- fact is the name of the fact, and 
+- min_sup is the minimum value of fact for the iceberg condition.
+*/
+BUC(data, dims, fact, min_sup):=
+block(
+    [
+        out: [],
+        fns: feature_names(data),
+        _BUC: lambda(
+            [input, ns_dims, dim],
+            block(
+                [
+                    s:apply("+",feature_values(input, fact)),
+                    c, t
+                ],
+                if s>=min_sup then
+                (
+                    c: map(
+                        lambda([fn,v],
+                            if elementp(fn, ns_dims) then v else 
+                            if equal(fn,fact) then s else
+                            "*"
+                        ),
+                        fns, args(all_feature_values(input))[1]
+                    ),
+                    out:endcons(c, out),
+                    for i:dim thru length(dims) do
+                    (
+                        t: split_data(input, dims[i]),
+                        /* print(input, ns_dims, dims[i], c, t), */
+                        for j:1 thru length(t[2]) do
+                        apply(_BUC, [t[2][j], adjoin(dims[i], ns_dims), i+1])
+                    )
+                )
+            )
+        )
+    ],
+    apply(_BUC, [data, {}, 1]),
+    build_data_from_list(fns, out)
+)$
